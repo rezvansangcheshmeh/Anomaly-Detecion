@@ -1,0 +1,674 @@
+{
+  "nbformat": 4,
+  "nbformat_minor": 0,
+  "metadata": {
+    "colab": {
+      "provenance": [],
+      "gpuType": "T4",
+      "authorship_tag": "ABX9TyN8BJ0ajf6XoHIT3CB0fO7U",
+      "include_colab_link": true
+    },
+    "kernelspec": {
+      "name": "python3",
+      "display_name": "Python 3"
+    },
+    "language_info": {
+      "name": "python"
+    },
+    "accelerator": "GPU"
+  },
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {
+        "id": "view-in-github",
+        "colab_type": "text"
+      },
+      "source": [
+        "<a href=\"https://colab.research.google.com/github/rezvansangcheshmeh/Anomaly-Detecion/blob/main/Qwen_Lora_FineTuning\" target=\"_parent\"><img src=\"https://colab.research.google.com/assets/colab-badge.svg\" alt=\"Open In Colab\"/></a>"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 48,
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "9Dv73vKVdNo_",
+        "outputId": "5d44f4d6-b88e-489d-c96b-8e2b6d43eeec"
+      },
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m12.7/12.7 MB\u001b[0m \u001b[31m128.7 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\n",
+            "\u001b[?25h"
+          ]
+        }
+      ],
+      "source": [
+        "!pip install -U -qq transformers peft accelerate datasets\n",
+        "!pip install -q pandas==2.2.2"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import torch\n",
+        "import pandas as pd\n",
+        "from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, pipeline\n",
+        "from peft import LoraConfig, get_peft_model, TaskType\n",
+        "\n",
+        "print(\"✅ Environment ready.\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "-giMTt_SdP2l",
+        "outputId": "6cde26e7-974f-4e98-af86-294bf1aa2d54"
+      },
+      "execution_count": 78,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "✅ Environment ready.\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# --- Phase 1: Baseline Test (Raw Model) ---\n",
+        "MODEL_NAME = \"Qwen/Qwen3-0.6B\"\n",
+        "tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)\n",
+        "model = AutoModelForCausalLM.from_pretrained(\n",
+        "    MODEL_NAME,\n",
+        "    device_map=\"cuda\",\n",
+        "    torch_dtype=torch.float16  )\n",
+        "\n",
+        "baseline_pipe = pipeline(\"text-generation\", model=model, tokenizer=tokenizer)\n",
+        "\n",
+        "prompt = \"Tell me About Kiasar?\"\n",
+        "baseline_output = baseline_pipe(prompt, max_new_tokens=50, temperature=0.7)\n",
+        "\n",
+        "print(\"\\n--- Phase 1: Baseline Test ---\")\n",
+        "print(\"Prompt:\", prompt)\n",
+        "print(\"Response:\", baseline_output[0][\"generated_text\"])\n",
+        "print(\"-----------------------------------------------------\")\n"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "zlcNkDu2dnOV",
+        "outputId": "8c74ca4c-347c-479f-d53c-343ecce16464"
+      },
+      "execution_count": 79,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "Device set to use cuda\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\n",
+            "--- Phase 1: Baseline Test ---\n",
+            "Prompt: Tell me About Kiasar?\n",
+            "Response: Tell me About Kiasar? What's the difference between Kiasar and Kiasar? Please explain in simple terms.\n",
+            "\n",
+            "Okay, so I need to explain the difference between Kiasar and Kiasar. Let me start by recalling what I know. Kiasar is\n",
+            "-----------------------------------------------------\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# --- Phase 2: Data Loading ---\n",
+        "TRAIN_DATA_FILE = \"kiasar_qa_data.json\"\n",
+        "df = pd.read_json(TRAIN_DATA_FILE)\n",
+        "print(\"\\n--- Phase 2: Data Loading ---\")\n",
+        "df.head()\n",
+        "\n"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 242
+        },
+        "id": "8DdePcrAj3XC",
+        "outputId": "796ddbd5-1366-466b-c8a5-a0e9e000febf"
+      },
+      "execution_count": 80,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\n",
+            "--- Phase 2: Data Loading ---\n"
+          ]
+        },
+        {
+          "output_type": "execute_result",
+          "data": {
+            "text/plain": [
+              "                                              prompt  \\\n",
+              "0  What are the basic facts about Kiasar, includi...   \n",
+              "1  What is the elevation and recent population of...   \n",
+              "2       Describe the geographical setting of Kiasar.   \n",
+              "3  What are the names of the mountains surroundin...   \n",
+              "4  What is the origin and meaning of the name 'Ki...   \n",
+              "\n",
+              "                                          completion  \n",
+              "0  Kiasar is a city in Iran, located in **Sari Co...  \n",
+              "1  Kiasar has an elevation of **1,378 meters (4,5...  \n",
+              "2  Kiasar is **surrounded by mountains** on all s...  \n",
+              "3  Kiasar is surrounded by mountains: **North:** ...  \n",
+              "4  The name Kiasar is traditionally attributed to...  "
+            ],
+            "text/html": [
+              "\n",
+              "  <div id=\"df-ef26201b-fa92-4e03-9ff1-9fdb70249078\" class=\"colab-df-container\">\n",
+              "    <div>\n",
+              "<style scoped>\n",
+              "    .dataframe tbody tr th:only-of-type {\n",
+              "        vertical-align: middle;\n",
+              "    }\n",
+              "\n",
+              "    .dataframe tbody tr th {\n",
+              "        vertical-align: top;\n",
+              "    }\n",
+              "\n",
+              "    .dataframe thead th {\n",
+              "        text-align: right;\n",
+              "    }\n",
+              "</style>\n",
+              "<table border=\"1\" class=\"dataframe\">\n",
+              "  <thead>\n",
+              "    <tr style=\"text-align: right;\">\n",
+              "      <th></th>\n",
+              "      <th>prompt</th>\n",
+              "      <th>completion</th>\n",
+              "    </tr>\n",
+              "  </thead>\n",
+              "  <tbody>\n",
+              "    <tr>\n",
+              "      <th>0</th>\n",
+              "      <td>What are the basic facts about Kiasar, includi...</td>\n",
+              "      <td>Kiasar is a city in Iran, located in **Sari Co...</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>1</th>\n",
+              "      <td>What is the elevation and recent population of...</td>\n",
+              "      <td>Kiasar has an elevation of **1,378 meters (4,5...</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>2</th>\n",
+              "      <td>Describe the geographical setting of Kiasar.</td>\n",
+              "      <td>Kiasar is **surrounded by mountains** on all s...</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>3</th>\n",
+              "      <td>What are the names of the mountains surroundin...</td>\n",
+              "      <td>Kiasar is surrounded by mountains: **North:** ...</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <th>4</th>\n",
+              "      <td>What is the origin and meaning of the name 'Ki...</td>\n",
+              "      <td>The name Kiasar is traditionally attributed to...</td>\n",
+              "    </tr>\n",
+              "  </tbody>\n",
+              "</table>\n",
+              "</div>\n",
+              "    <div class=\"colab-df-buttons\">\n",
+              "\n",
+              "  <div class=\"colab-df-container\">\n",
+              "    <button class=\"colab-df-convert\" onclick=\"convertToInteractive('df-ef26201b-fa92-4e03-9ff1-9fdb70249078')\"\n",
+              "            title=\"Convert this dataframe to an interactive table.\"\n",
+              "            style=\"display:none;\">\n",
+              "\n",
+              "  <svg xmlns=\"http://www.w3.org/2000/svg\" height=\"24px\" viewBox=\"0 -960 960 960\">\n",
+              "    <path d=\"M120-120v-720h720v720H120Zm60-500h600v-160H180v160Zm220 220h160v-160H400v160Zm0 220h160v-160H400v160ZM180-400h160v-160H180v160Zm440 0h160v-160H620v160ZM180-180h160v-160H180v160Zm440 0h160v-160H620v160Z\"/>\n",
+              "  </svg>\n",
+              "    </button>\n",
+              "\n",
+              "  <style>\n",
+              "    .colab-df-container {\n",
+              "      display:flex;\n",
+              "      gap: 12px;\n",
+              "    }\n",
+              "\n",
+              "    .colab-df-convert {\n",
+              "      background-color: #E8F0FE;\n",
+              "      border: none;\n",
+              "      border-radius: 50%;\n",
+              "      cursor: pointer;\n",
+              "      display: none;\n",
+              "      fill: #1967D2;\n",
+              "      height: 32px;\n",
+              "      padding: 0 0 0 0;\n",
+              "      width: 32px;\n",
+              "    }\n",
+              "\n",
+              "    .colab-df-convert:hover {\n",
+              "      background-color: #E2EBFA;\n",
+              "      box-shadow: 0px 1px 2px rgba(60, 64, 67, 0.3), 0px 1px 3px 1px rgba(60, 64, 67, 0.15);\n",
+              "      fill: #174EA6;\n",
+              "    }\n",
+              "\n",
+              "    .colab-df-buttons div {\n",
+              "      margin-bottom: 4px;\n",
+              "    }\n",
+              "\n",
+              "    [theme=dark] .colab-df-convert {\n",
+              "      background-color: #3B4455;\n",
+              "      fill: #D2E3FC;\n",
+              "    }\n",
+              "\n",
+              "    [theme=dark] .colab-df-convert:hover {\n",
+              "      background-color: #434B5C;\n",
+              "      box-shadow: 0px 1px 3px 1px rgba(0, 0, 0, 0.15);\n",
+              "      filter: drop-shadow(0px 1px 2px rgba(0, 0, 0, 0.3));\n",
+              "      fill: #FFFFFF;\n",
+              "    }\n",
+              "  </style>\n",
+              "\n",
+              "    <script>\n",
+              "      const buttonEl =\n",
+              "        document.querySelector('#df-ef26201b-fa92-4e03-9ff1-9fdb70249078 button.colab-df-convert');\n",
+              "      buttonEl.style.display =\n",
+              "        google.colab.kernel.accessAllowed ? 'block' : 'none';\n",
+              "\n",
+              "      async function convertToInteractive(key) {\n",
+              "        const element = document.querySelector('#df-ef26201b-fa92-4e03-9ff1-9fdb70249078');\n",
+              "        const dataTable =\n",
+              "          await google.colab.kernel.invokeFunction('convertToInteractive',\n",
+              "                                                    [key], {});\n",
+              "        if (!dataTable) return;\n",
+              "\n",
+              "        const docLinkHtml = 'Like what you see? Visit the ' +\n",
+              "          '<a target=\"_blank\" href=https://colab.research.google.com/notebooks/data_table.ipynb>data table notebook</a>'\n",
+              "          + ' to learn more about interactive tables.';\n",
+              "        element.innerHTML = '';\n",
+              "        dataTable['output_type'] = 'display_data';\n",
+              "        await google.colab.output.renderOutput(dataTable, element);\n",
+              "        const docLink = document.createElement('div');\n",
+              "        docLink.innerHTML = docLinkHtml;\n",
+              "        element.appendChild(docLink);\n",
+              "      }\n",
+              "    </script>\n",
+              "  </div>\n",
+              "\n",
+              "\n",
+              "    <div id=\"df-d6a8e725-5613-46fa-8a6a-1b46a8ac79cb\">\n",
+              "      <button class=\"colab-df-quickchart\" onclick=\"quickchart('df-d6a8e725-5613-46fa-8a6a-1b46a8ac79cb')\"\n",
+              "                title=\"Suggest charts\"\n",
+              "                style=\"display:none;\">\n",
+              "\n",
+              "<svg xmlns=\"http://www.w3.org/2000/svg\" height=\"24px\"viewBox=\"0 0 24 24\"\n",
+              "     width=\"24px\">\n",
+              "    <g>\n",
+              "        <path d=\"M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z\"/>\n",
+              "    </g>\n",
+              "</svg>\n",
+              "      </button>\n",
+              "\n",
+              "<style>\n",
+              "  .colab-df-quickchart {\n",
+              "      --bg-color: #E8F0FE;\n",
+              "      --fill-color: #1967D2;\n",
+              "      --hover-bg-color: #E2EBFA;\n",
+              "      --hover-fill-color: #174EA6;\n",
+              "      --disabled-fill-color: #AAA;\n",
+              "      --disabled-bg-color: #DDD;\n",
+              "  }\n",
+              "\n",
+              "  [theme=dark] .colab-df-quickchart {\n",
+              "      --bg-color: #3B4455;\n",
+              "      --fill-color: #D2E3FC;\n",
+              "      --hover-bg-color: #434B5C;\n",
+              "      --hover-fill-color: #FFFFFF;\n",
+              "      --disabled-bg-color: #3B4455;\n",
+              "      --disabled-fill-color: #666;\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-quickchart {\n",
+              "    background-color: var(--bg-color);\n",
+              "    border: none;\n",
+              "    border-radius: 50%;\n",
+              "    cursor: pointer;\n",
+              "    display: none;\n",
+              "    fill: var(--fill-color);\n",
+              "    height: 32px;\n",
+              "    padding: 0;\n",
+              "    width: 32px;\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-quickchart:hover {\n",
+              "    background-color: var(--hover-bg-color);\n",
+              "    box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);\n",
+              "    fill: var(--button-hover-fill-color);\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-quickchart-complete:disabled,\n",
+              "  .colab-df-quickchart-complete:disabled:hover {\n",
+              "    background-color: var(--disabled-bg-color);\n",
+              "    fill: var(--disabled-fill-color);\n",
+              "    box-shadow: none;\n",
+              "  }\n",
+              "\n",
+              "  .colab-df-spinner {\n",
+              "    border: 2px solid var(--fill-color);\n",
+              "    border-color: transparent;\n",
+              "    border-bottom-color: var(--fill-color);\n",
+              "    animation:\n",
+              "      spin 1s steps(1) infinite;\n",
+              "  }\n",
+              "\n",
+              "  @keyframes spin {\n",
+              "    0% {\n",
+              "      border-color: transparent;\n",
+              "      border-bottom-color: var(--fill-color);\n",
+              "      border-left-color: var(--fill-color);\n",
+              "    }\n",
+              "    20% {\n",
+              "      border-color: transparent;\n",
+              "      border-left-color: var(--fill-color);\n",
+              "      border-top-color: var(--fill-color);\n",
+              "    }\n",
+              "    30% {\n",
+              "      border-color: transparent;\n",
+              "      border-left-color: var(--fill-color);\n",
+              "      border-top-color: var(--fill-color);\n",
+              "      border-right-color: var(--fill-color);\n",
+              "    }\n",
+              "    40% {\n",
+              "      border-color: transparent;\n",
+              "      border-right-color: var(--fill-color);\n",
+              "      border-top-color: var(--fill-color);\n",
+              "    }\n",
+              "    60% {\n",
+              "      border-color: transparent;\n",
+              "      border-right-color: var(--fill-color);\n",
+              "    }\n",
+              "    80% {\n",
+              "      border-color: transparent;\n",
+              "      border-right-color: var(--fill-color);\n",
+              "      border-bottom-color: var(--fill-color);\n",
+              "    }\n",
+              "    90% {\n",
+              "      border-color: transparent;\n",
+              "      border-bottom-color: var(--fill-color);\n",
+              "    }\n",
+              "  }\n",
+              "</style>\n",
+              "\n",
+              "      <script>\n",
+              "        async function quickchart(key) {\n",
+              "          const quickchartButtonEl =\n",
+              "            document.querySelector('#' + key + ' button');\n",
+              "          quickchartButtonEl.disabled = true;  // To prevent multiple clicks.\n",
+              "          quickchartButtonEl.classList.add('colab-df-spinner');\n",
+              "          try {\n",
+              "            const charts = await google.colab.kernel.invokeFunction(\n",
+              "                'suggestCharts', [key], {});\n",
+              "          } catch (error) {\n",
+              "            console.error('Error during call to suggestCharts:', error);\n",
+              "          }\n",
+              "          quickchartButtonEl.classList.remove('colab-df-spinner');\n",
+              "          quickchartButtonEl.classList.add('colab-df-quickchart-complete');\n",
+              "        }\n",
+              "        (() => {\n",
+              "          let quickchartButtonEl =\n",
+              "            document.querySelector('#df-d6a8e725-5613-46fa-8a6a-1b46a8ac79cb button');\n",
+              "          quickchartButtonEl.style.display =\n",
+              "            google.colab.kernel.accessAllowed ? 'block' : 'none';\n",
+              "        })();\n",
+              "      </script>\n",
+              "    </div>\n",
+              "\n",
+              "    </div>\n",
+              "  </div>\n"
+            ],
+            "application/vnd.google.colaboratory.intrinsic+json": {
+              "type": "dataframe",
+              "variable_name": "df",
+              "summary": "{\n  \"name\": \"df\",\n  \"rows\": 26,\n  \"fields\": [\n    {\n      \"column\": \"prompt\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 26,\n        \"samples\": [\n          \"What dialect and language do the people of Kiasar speak?\",\n          \"Describe the Pole (Alandan) Lake near Kiasar.\",\n          \"What are the basic facts about Kiasar, including its location and county?\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    },\n    {\n      \"column\": \"completion\",\n      \"properties\": {\n        \"dtype\": \"string\",\n        \"num_unique_values\": 26,\n        \"samples\": [\n          \"The people of Kiasar speak the **Mazandarani language** with the **Saravi dialect**. Due to its proximity to the Semnan border (Shahmirzad), there is also some influence from the Shahmirzadi dialect.\",\n          \"Pole Lake (also known as Pole-Azani Ab-bandan) is a lake located near Alandan village, about **20 kilometers from Kiasar**. Its size is about **17 hectares** and is unique because its water is supplied **only by rainfall and snowmelt**, with no river feeding into it.\",\n          \"Kiasar is a city in Iran, located in **Sari County** of **Mazandaran Province**. It is situated about **70 kilometers (43 miles) south of Sari city** and serves as the center of the Chahardangeh District of Sari.\"\n        ],\n        \"semantic_type\": \"\",\n        \"description\": \"\"\n      }\n    }\n  ]\n}"
+            }
+          },
+          "metadata": {},
+          "execution_count": 80
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# --- Phase 3: Preprocessing ---\n",
+        "def preprocess_row(row):\n",
+        "    text = f\"User: {row['prompt']}\\nAssistant: {row['completion']}\"\n",
+        "    tokens = tokenizer(text, max_length=128, truncation=True, padding=\"max_length\")\n",
+        "    tokens[\"labels\"] = tokens[\"input_ids\"].copy()\n",
+        "    return tokens\n",
+        "\n",
+        "processed = df.apply(preprocess_row, axis=1)\n",
+        "train_encoding = {\n",
+        "    \"input_ids\": [x[\"input_ids\"] for x in processed],\n",
+        "    \"attention_mask\": [x[\"attention_mask\"] for x in processed],\n",
+        "    \"labels\": [x[\"labels\"] for x in processed],\n",
+        "}\n",
+        "\n",
+        "\n",
+        "class CustomDataset(torch.utils.data.Dataset):\n",
+        "    def __init__(self, encodings): self.encodings = encodings\n",
+        "    def __len__(self): return len(self.encodings[\"input_ids\"])\n",
+        "    def __getitem__(self, idx): return {k: torch.tensor(v[idx]) for k,v in self.encodings.items()}\n",
+        "\n",
+        "train_dataset = CustomDataset(train_encoding)\n",
+        "print(\"\\n--- Phase 3: Preprocessing ---\")\n",
+        "print(f\"✅ Data tokenized. Total samples: {len(train_dataset)}\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "XEjUkJraj_6H",
+        "outputId": "16632501-2f95-493e-f6e2-9f0ba404286e"
+      },
+      "execution_count": 81,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\n",
+            "--- Phase 3: Preprocessing ---\n",
+            "✅ Data tokenized. Total samples: 26\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# --- Phase 4: Fine-Tuning with LoRA ---\n",
+        "OUTPUT_DIR = \"./my-qwen\"\n",
+        "lora_config = LoraConfig(task_type=TaskType.CAUSAL_LM, target_modules=[\"q_proj\",\"k_proj\",\"v_proj\"], r=8, lora_alpha=16, lora_dropout=0.05)\n",
+        "model = get_peft_model(model, lora_config)\n",
+        "model.print_trainable_parameters()\n",
+        "\n",
+        "training_args = TrainingArguments(\n",
+        "    output_dir=OUTPUT_DIR,\n",
+        "    num_train_epochs=25,\n",
+        "    per_device_train_batch_size=4,\n",
+        "    learning_rate=0.001,\n",
+        "    logging_steps=25,\n",
+        "    report_to=\"none\",\n",
+        "    bf16=True\n",
+        ")\n",
+        "\n",
+        "trainer = Trainer(model=model, args=training_args, train_dataset=train_dataset, tokenizer=tokenizer)\n",
+        "print(\"\\n--- Phase 4: Fine-Tuning ---\")\n",
+        "trainer.train()\n",
+        "trainer.save_model(OUTPUT_DIR)\n",
+        "tokenizer.save_pretrained(OUTPUT_DIR)\n",
+        "print(\"✅ Fine-tuning completed and model saved.\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/",
+          "height": 442
+        },
+        "id": "I3eORVmwkMgN",
+        "outputId": "d985327c-3e22-4766-fd85-35af83f5e5ad"
+      },
+      "execution_count": 85,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "/tmp/ipython-input-2494585830.py:17: FutureWarning: `tokenizer` is deprecated and will be removed in version 5.0.0 for `Trainer.__init__`. Use `processing_class` instead.\n",
+            "  trainer = Trainer(model=model, args=training_args, train_dataset=train_dataset, tokenizer=tokenizer)\n",
+            "The tokenizer has new PAD/BOS/EOS tokens that differ from the model config and generation config. The model config and generation config were aligned accordingly, being updated with the tokenizer's values. Updated tokens: {'bos_token_id': None, 'pad_token_id': 151643}.\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "trainable params: 1,605,632 || all params: 597,655,552 || trainable%: 0.2687\n",
+            "\n",
+            "--- Phase 4: Fine-Tuning ---\n"
+          ]
+        },
+        {
+          "output_type": "display_data",
+          "data": {
+            "text/plain": [
+              "<IPython.core.display.HTML object>"
+            ],
+            "text/html": [
+              "\n",
+              "    <div>\n",
+              "      \n",
+              "      <progress value='175' max='175' style='width:300px; height:20px; vertical-align: middle;'></progress>\n",
+              "      [175/175 01:53, Epoch 25/25]\n",
+              "    </div>\n",
+              "    <table border=\"1\" class=\"dataframe\">\n",
+              "  <thead>\n",
+              " <tr style=\"text-align: left;\">\n",
+              "      <th>Step</th>\n",
+              "      <th>Training Loss</th>\n",
+              "    </tr>\n",
+              "  </thead>\n",
+              "  <tbody>\n",
+              "    <tr>\n",
+              "      <td>25</td>\n",
+              "      <td>1.893200</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <td>50</td>\n",
+              "      <td>0.491100</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <td>75</td>\n",
+              "      <td>0.157800</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <td>100</td>\n",
+              "      <td>0.055700</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <td>125</td>\n",
+              "      <td>0.037300</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <td>150</td>\n",
+              "      <td>0.033700</td>\n",
+              "    </tr>\n",
+              "    <tr>\n",
+              "      <td>175</td>\n",
+              "      <td>0.029400</td>\n",
+              "    </tr>\n",
+              "  </tbody>\n",
+              "</table><p>"
+            ]
+          },
+          "metadata": {}
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "✅ Fine-tuning completed and model saved.\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# --- Phase 5: Evaluation ---\n",
+        "ft_pipe = pipeline(\"text-generation\", model=OUTPUT_DIR, tokenizer=OUTPUT_DIR, device=0)\n",
+        "test_prompt = \"Tell me about Kiasar\"\n",
+        "ft_output = ft_pipe(test_prompt, max_new_tokens=50, temperature=0.7)\n",
+        "\n",
+        "print(\"\\n--- Phase 5: Evaluation ---\")\n",
+        "print(\"Prompt:\", test_prompt)\n",
+        "print(\"Response:\", ft_output[0][\"generated_text\"])\n",
+        "print(\"-----------------------------------------------------\")"
+      ],
+      "metadata": {
+        "colab": {
+          "base_uri": "https://localhost:8080/"
+        },
+        "id": "AJhCpoeKkfAn",
+        "outputId": "4df7bf85-66f5-4018-bd91-8ede088f97be"
+      },
+      "execution_count": 88,
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": [
+            "Device set to use cuda:0\n"
+          ]
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": [
+            "\n",
+            "--- Phase 5: Evaluation ---\n",
+            "Prompt: Tell me about Kiasar\n",
+            "Response: Tell me about Kiasar, the city in Iran, and where it is located. Kiasar is the center of the **Chahardangeh District of Sari**. It is located in the **East Azari District of Chahardangeh** (\n",
+            "-----------------------------------------------------\n"
+          ]
+        }
+      ]
+    },
+    {
+      "cell_type": "code",
+      "source": [],
+      "metadata": {
+        "id": "DXvZJ-VEkr8B"
+      },
+      "execution_count": 75,
+      "outputs": []
+    }
+  ]
+}
